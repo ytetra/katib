@@ -20,6 +20,8 @@ import (
 	"log"
 	"strconv"
 	"sync"
+	"time"
+	"fmt"
 
 	"github.com/kubeflow/katib/pkg"
 	katibapi "github.com/kubeflow/katib/pkg/api"
@@ -143,14 +145,21 @@ type WorkerStatus struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=studyjob.kubeflow.org,resources=studyjob,verbs=get;list;watch;create;update;patch;delete
 func (r *ReconcileStudyJobController) Reconcile(request reconcile.Request) (reconcile.Result, error) {
+	id := strconv.Itoa(time.Now().Nanosecond())
+	fmt.Print("[" + id + "]**Reconcile Start** ")
+	fmt.Println(time.Now())
 	// Fetch the StudyJob instance
 	instance := &katibv1alpha1.StudyJob{}
 	mux := new(sync.Mutex)
 	if m, loaded := r.muxMap.LoadOrStore(request.NamespacedName.String(), mux); loaded {
 		mux, _ = m.(*sync.Mutex)
 	}
+	fmt.Print("[" + id + "]Lock ")
+	fmt.Println(time.Now())
 	mux.Lock()
 	defer mux.Unlock()
+	defer fmt.Println(time.Now())
+	defer fmt.Print("[" + id + "]Unlock ")
 	err := r.Get(context.TODO(), request.NamespacedName, instance)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -190,9 +199,12 @@ func (r *ReconcileStudyJobController) Reconcile(request reconcile.Request) (reco
 		return reconcile.Result{}, err
 	}
 	if update {
+		fmt.Print("[" + id + "]update true ")
+		fmt.Println(time.Now())
 		err = r.Update(context.TODO(), instance)
 		if err != nil {
-			log.Printf("Fail to Update StudyJob %v : %v", instance.Status.StudyID, err)
+			fmt.Print("[" + id + "]Fail to Update StudyJob %v : %v ", instance.Status.StudyID, err)
+			fmt.Println(time.Now())
 			return reconcile.Result{}, err
 		}
 	}
