@@ -150,6 +150,7 @@ func (r *ReconcileStudyJobController) Reconcile(request reconcile.Request) (reco
 	fmt.Println(time.Now())
 	// Fetch the StudyJob instance
 	instance := &katibv1alpha1.StudyJob{}
+	lock_ins := &katibv1alpha1.StudyJob{}
 	mux := new(sync.Mutex)
 	if m, loaded := r.muxMap.LoadOrStore(request.NamespacedName.String(), mux); loaded {
 		mux, _ = m.(*sync.Mutex)
@@ -161,6 +162,7 @@ func (r *ReconcileStudyJobController) Reconcile(request reconcile.Request) (reco
 	defer fmt.Println(time.Now())
 	defer fmt.Print("[" + id + "]Unlock ")
 	err := r.Get(context.TODO(), request.NamespacedName, instance)
+	lock_ins = instance
 	if err != nil {
 		if errors.IsNotFound(err) {
 			if _, ok := r.muxMap.Load(request.NamespacedName.String()); ok {
@@ -201,11 +203,26 @@ func (r *ReconcileStudyJobController) Reconcile(request reconcile.Request) (reco
 	if update {
 		fmt.Print("[" + id + "]update true ")
 		fmt.Println(time.Now())
+
 		err = r.Update(context.TODO(), instance)
+		fmt.Println("[locked]")
+		fmt.Printf("%+v\n", lock_ins)
 		if err != nil {
+			fmt.Printf("\n\n")
 			fmt.Print("[" + id + "]Fail to Update StudyJob %v : %v ", instance.Status.StudyID, err)
 			fmt.Println(time.Now())
+			fmt.Printf("\n\n")
+			fmt.Printf("\n")
+			fmt.Println("[failed]")
+			r.Get(context.TODO(), request.NamespacedName, instance)
+			fmt.Printf("%+v\n", instance)
+			fmt.Printf("\n")
 			return reconcile.Result{}, err
+		} else {
+			fmt.Println("[success]")
+			r.Get(context.TODO(), request.NamespacedName, instance)
+			fmt.Printf("%+v\n", instance)
+			fmt.Printf("\n")
 		}
 	}
 	return reconcile.Result{}, nil
