@@ -150,7 +150,7 @@ func (r *ReconcileStudyJobController) Reconcile(request reconcile.Request) (reco
 	fmt.Println(time.Now())
 	// Fetch the StudyJob instance
 	instance := &katibv1alpha1.StudyJob{}
-	lock_ins := &katibv1alpha1.StudyJob{}
+	//lock_ins := &katibv1alpha1.StudyJob{}
 	mux := new(sync.Mutex)
 	if m, loaded := r.muxMap.LoadOrStore(request.NamespacedName.String(), mux); loaded {
 		mux, _ = m.(*sync.Mutex)
@@ -162,7 +162,8 @@ func (r *ReconcileStudyJobController) Reconcile(request reconcile.Request) (reco
 	defer fmt.Println(time.Now())
 	defer fmt.Print("[" + id + "]Unlock ")
 	err := r.Get(context.TODO(), request.NamespacedName, instance)
-	lock_ins = instance
+	fmt.Println("[resouceVersion]" + instance.ObjectMeta.ResourceVersion)
+	//lock_ins = instance
 	if err != nil {
 		if errors.IsNotFound(err) {
 			if _, ok := r.muxMap.Load(request.NamespacedName.String()); ok {
@@ -178,9 +179,12 @@ func (r *ReconcileStudyJobController) Reconcile(request reconcile.Request) (reco
 		return reconcile.Result{}, err
 	}
 
+	fmt.Println("[resouceVersion]" + instance.ObjectMeta.ResourceVersion + "(checkStatus)")
 	var update bool = false
 	switch instance.Status.Condition {
 	case katibv1alpha1.ConditionCompleted:
+		//time.Sleep(1000 * time.Millisecond)
+		//r.Get(context.TODO(), request.NamespacedName, instance)
 		update, err = r.checkStatus(instance, request.Namespace)
 	case katibv1alpha1.ConditionFailed:
 		update, err = r.checkStatus(instance, request.Namespace)
@@ -195,6 +199,7 @@ func (r *ReconcileStudyJobController) Reconcile(request reconcile.Request) (reco
 		}
 		update = true
 	}
+	fmt.Println("[resouceVersion]" + instance.ObjectMeta.ResourceVersion + "(BeforeUpdate)")
 	if err != nil {
 		r.Update(context.TODO(), instance)
 		log.Printf("Fail to check status %v", err)
@@ -206,7 +211,7 @@ func (r *ReconcileStudyJobController) Reconcile(request reconcile.Request) (reco
 
 		err = r.Update(context.TODO(), instance)
 		fmt.Println("[locked]")
-		fmt.Printf("%+v\n", lock_ins)
+		//fmt.Printf("%+v\n", lock_ins)
 		if err != nil {
 			fmt.Printf("\n\n")
 			fmt.Print("[" + id + "]Fail to Update StudyJob %v : %v ", instance.Status.StudyID, err)
@@ -215,13 +220,13 @@ func (r *ReconcileStudyJobController) Reconcile(request reconcile.Request) (reco
 			fmt.Printf("\n")
 			fmt.Println("[failed]")
 			r.Get(context.TODO(), request.NamespacedName, instance)
-			fmt.Printf("%+v\n", instance)
+			//fmt.Printf("%+v\n", instance)
 			fmt.Printf("\n")
 			return reconcile.Result{}, err
 		} else {
 			fmt.Println("[success]")
 			r.Get(context.TODO(), request.NamespacedName, instance)
-			fmt.Printf("%+v\n", instance)
+			//fmt.Printf("%+v\n", instance)
 			fmt.Printf("\n")
 		}
 	}
