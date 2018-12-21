@@ -150,84 +150,79 @@ func (r *ReconcileStudyJobController) Reconcile(request reconcile.Request) (reco
 	fmt.Println(time.Now())
 	// Fetch the StudyJob instance
 	instance := &katibv1alpha1.StudyJob{}
-	//lock_ins := &katibv1alpha1.StudyJob{}
 	mux := new(sync.Mutex)
 	if m, loaded := r.muxMap.LoadOrStore(request.NamespacedName.String(), mux); loaded {
 		mux, _ = m.(*sync.Mutex)
 	}
-	fmt.Print("[" + id + "]Lock ")
-	fmt.Println(time.Now())
 	mux.Lock()
 	defer mux.Unlock()
+	defer fmt.Println("")
 	defer fmt.Println(time.Now())
 	defer fmt.Print("[" + id + "]Unlock ")
-	err := r.Get(context.TODO(), request.NamespacedName, instance)
-	fmt.Println("[resouceVersion]" + instance.ObjectMeta.ResourceVersion)
-	//lock_ins = instance
-	if err != nil {
-		if errors.IsNotFound(err) {
-			if _, ok := r.muxMap.Load(request.NamespacedName.String()); ok {
-				log.Printf("Study %s was deleted. Resouces will be released.", request.NamespacedName.String())
-				r.muxMap.Delete(request.NamespacedName.String())
-			}
-			// Object not found, return.  Created objects are automatically garbage collected.
-			// For additional cleanup logic use finalizers.
-			return reconcile.Result{}, nil
-		}
-		log.Printf("Fail to read Object %v", err)
-		// Error reading the object - requeue the request.
-		return reconcile.Result{}, err
-	}
 
-	fmt.Println("[resouceVersion]" + instance.ObjectMeta.ResourceVersion + "(checkStatus)")
-	var update bool = false
-	switch instance.Status.Condition {
-	case katibv1alpha1.ConditionCompleted:
-		//time.Sleep(1000 * time.Millisecond)
-		//r.Get(context.TODO(), request.NamespacedName, instance)
-		update, err = r.checkStatus(instance, request.Namespace)
-	case katibv1alpha1.ConditionFailed:
-		update, err = r.checkStatus(instance, request.Namespace)
-	case katibv1alpha1.ConditionRunning:
-		update, err = r.checkStatus(instance, request.Namespace)
-	default:
-		err = initializeStudy(instance, request.Namespace)
+	var firstTime bool = true
+
+	for {
+		err := r.Get(context.TODO(), request.NamespacedName, instance)
+		fmt.Println("[Get instance]")
+		//fmt.Printf("%+v\n", instance)
+		if err != nil {
+			if errors.IsNotFound(err) {
+				if _, ok := r.muxMap.Load(request.NamespacedName.String()); ok {
+					log.Printf("Study %s was deleted. Resouces will be released.", request.NamespacedName.String())
+					r.muxMap.Delete(request.NamespacedName.String())
+				}
+				// Object not found, return.  Created objects are automatically garbage collected.
+				// For additional cleanup logic use finalizers.
+				return reconcile.Result{}, nil
+			}
+			log.Printf("Fail to read Object %v", err)
+			// Error reading the object - requeue the request.
+			return reconcile.Result{}, err
+		}
+
+		var update bool = false
+		switch instance.Status.Condition {
+		case katibv1alpha1.ConditionCompleted:
+			update, err = r.checkStatus(instance, request.Namespace, firstTime)
+		case katibv1alpha1.ConditionFailed:
+			update, err = r.checkStatus(instance, request.Namespace, firstTime)
+		case katibv1alpha1.ConditionRunning:
+			update, err = r.checkStatus(instance, request.Namespace, firstTime)
+		default:
+			err = initializeStudy(instance, request.Namespace)
+			if err != nil {
+				r.Update(context.TODO(), instance)
+				log.Printf("Fail to initialize %v", err)
+				return reconcile.Result{}, err
+			}
+			update = true
+		}
+
 		if err != nil {
 			r.Update(context.TODO(), instance)
-			log.Printf("Fail to initialize %v", err)
+			log.Printf("Fail to check status %v", err)
 			return reconcile.Result{}, err
 		}
-		update = true
-	}
-	fmt.Println("[resouceVersion]" + instance.ObjectMeta.ResourceVersion + "(BeforeUpdate)")
-	if err != nil {
-		r.Update(context.TODO(), instance)
-		log.Printf("Fail to check status %v", err)
-		return reconcile.Result{}, err
-	}
-	if update {
-		fmt.Print("[" + id + "]update true ")
-		fmt.Println(time.Now())
 
-		err = r.Update(context.TODO(), instance)
-		fmt.Println("[locked]")
-		//fmt.Printf("%+v\n", lock_ins)
-		if err != nil {
-			fmt.Printf("\n\n")
-			fmt.Print("[" + id + "]Fail to Update StudyJob %v : %v ", instance.Status.StudyID, err)
-			fmt.Println(time.Now())
-			fmt.Printf("\n\n")
-			fmt.Printf("\n")
-			fmt.Println("[failed]")
-			r.Get(context.TODO(), request.NamespacedName, instance)
+		if update {
+			fmt.Println("[StatusChecked]")
 			//fmt.Printf("%+v\n", instance)
-			fmt.Printf("\n")
-			return reconcile.Result{}, err
+			err = r.Update(context.TODO(), instance)
+			if err != nil {
+				fmt.Print("[" + id + "]Fail to Update StudyJob %v : %v ", instance.Status.StudyID, err)
+
+				fmt.Printf("\n")
+				fmt.Println("[failed]")
+				log.Printf("Retry update instance state")
+				firstTime = false
+			} else {
+				break
+			}
 		} else {
-			fmt.Println("[success]")
-			r.Get(context.TODO(), request.NamespacedName, instance)
+			fmt.Println("[No update]")
 			//fmt.Printf("%+v\n", instance)
-			fmt.Printf("\n")
+			break
 		}
 	}
 	return reconcile.Result{}, nil
@@ -407,7 +402,7 @@ func (r *ReconcileStudyJobController) updateWorker(c katibapi.ManagerClient, ins
 	return update, nil
 }
 
-func (r *ReconcileStudyJobController) checkStatus(instance *katibv1alpha1.StudyJob, ns string) (bool, error) {
+func (r *ReconcileStudyJobController) checkStatus(instance *katibv1alpha1.StudyJob, ns string, firstTime bool) (bool, error) {
 	nextSuggestionSchedule := true
 	var cwids []string
 	var update bool = false
@@ -426,88 +421,94 @@ func (r *ReconcileStudyJobController) checkStatus(instance *katibv1alpha1.StudyJ
 	}
 	defer conn.Close()
 	c := katibapi.NewManagerClient(conn)
-	for i, t := range instance.Status.Trials {
-		for j, w := range t.WorkerList {
-			if w.Condition == katibv1alpha1.ConditionCompleted || w.Condition == katibv1alpha1.ConditionFailed {
-				if w.ObjectiveValue == nil && w.Condition == katibv1alpha1.ConditionCompleted {
-					cwids = append(cwids, w.WorkerID)
+	//if firstTime {
+		for i, t := range instance.Status.Trials {
+			for j, w := range t.WorkerList {
+				if firstTime {
+					if w.Condition == katibv1alpha1.ConditionCompleted || w.Condition == katibv1alpha1.ConditionFailed {
+						if w.ObjectiveValue == nil && w.Condition == katibv1alpha1.ConditionCompleted {
+							cwids = append(cwids, w.WorkerID)
+						}
+						switch w.Kind {
+						case DefaultJobWorker:
+							if err := r.deleteWorkerResources(instance, &batchv1.Job{}, ns, w.WorkerID); err != nil {
+								return false, err
+							}
+						case TFJobWorker:
+							if err := r.deleteWorkerResources(instance, &tfjobv1beta1.TFJob{}, ns, w.WorkerID); err != nil {
+								return false, err
+							}
+						}
+						continue
+					}
 				}
+				nextSuggestionSchedule = false
 				switch w.Kind {
 				case DefaultJobWorker:
-					if err := r.deleteWorkerResources(instance, &batchv1.Job{}, ns, w.WorkerID); err != nil {
-						return false, err
+					job := &batchv1.Job{}
+					nname := types.NamespacedName{Namespace: ns, Name: w.WorkerID}
+					joberr := r.Client.Get(context.TODO(), nname, job)
+					if joberr != nil {
+						continue
 					}
-				case TFJobWorker:
-					if err := r.deleteWorkerResources(instance, &tfjobv1beta1.TFJob{}, ns, w.WorkerID); err != nil {
-						return false, err
-					}
-				}
-				continue
-			}
-			nextSuggestionSchedule = false
-			switch w.Kind {
-			case DefaultJobWorker:
-				job := &batchv1.Job{}
-				nname := types.NamespacedName{Namespace: ns, Name: w.WorkerID}
-				joberr := r.Client.Get(context.TODO(), nname, job)
-				if joberr != nil {
-					continue
-				}
-				var state katibapi.State = katibapi.State_RUNNING
-				if job.Status.Active == 0 && job.Status.Succeeded > 0 {
-					state = katibapi.State_COMPLETED
-				} else if job.Status.Failed > 0 {
-					state = katibapi.State_ERROR
-				}
-				js := WorkerStatus{
-					CompletionTime: job.Status.CompletionTime,
-					WorkerState: state,
-				}
-				update, err = r.updateWorker(c, instance, js, ns, cwids[0:], i, j)
-			case TFJobWorker:
-				tfjob := &tfjobv1beta1.TFJob{}
-				nname := types.NamespacedName{Namespace: ns, Name: w.WorkerID}
-				tfjoberr := r.Client.Get(context.TODO(), nname, tfjob)
-				if tfjoberr != nil {
-					continue
-				}
-				var state katibapi.State = katibapi.State_RUNNING
-				if len(tfjob.Status.Conditions) > 0 {
-					lc := tfjob.Status.Conditions[len(tfjob.Status.Conditions) - 1]
-					if lc.Type == commonv1beta1.JobSucceeded {
+					var state katibapi.State = katibapi.State_RUNNING
+					if job.Status.Active == 0 && job.Status.Succeeded > 0 {
 						state = katibapi.State_COMPLETED
-					}	else if lc.Type == commonv1beta1.JobFailed {
+					} else if job.Status.Failed > 0 {
 						state = katibapi.State_ERROR
 					}
+					js := WorkerStatus{
+						CompletionTime: job.Status.CompletionTime,
+						WorkerState: state,
+					}
+					update, err = r.updateWorker(c, instance, js, ns, cwids[0:], i, j)
+				case TFJobWorker:
+					tfjob := &tfjobv1beta1.TFJob{}
+					nname := types.NamespacedName{Namespace: ns, Name: w.WorkerID}
+					tfjoberr := r.Client.Get(context.TODO(), nname, tfjob)
+					if tfjoberr != nil {
+						continue
+					}
+					var state katibapi.State = katibapi.State_RUNNING
+					if len(tfjob.Status.Conditions) > 0 {
+						lc := tfjob.Status.Conditions[len(tfjob.Status.Conditions) - 1]
+						if lc.Type == commonv1beta1.JobSucceeded {
+							state = katibapi.State_COMPLETED
+						}	else if lc.Type == commonv1beta1.JobFailed {
+							state = katibapi.State_ERROR
+						}
+					}
+					js := WorkerStatus{
+						CompletionTime: tfjob.Status.CompletionTime,
+						WorkerState: state,
+					}
+					update, err = r.updateWorker(c, instance, js, ns, cwids[0:], i, j)
 				}
-				js := WorkerStatus{
-					CompletionTime: tfjob.Status.CompletionTime,
-					WorkerState: state,
-				}
-				update, err = r.updateWorker(c, instance, js, ns, cwids[0:], i, j)
-
 			}
 		}
-	}
-	if len(cwids) > 0 {
-		goal, err := r.checkGoal(instance, c, cwids)
-		if goal {
-			log.Printf("Study %s reached to the goal. It is completed", instance.Status.StudyID)
-			instance.Status.Condition = katibv1alpha1.ConditionCompleted
-			update = true
-			nextSuggestionSchedule = false
+		if len(cwids) > 0 {
+			goal, err := r.checkGoal(instance, c, cwids)
+			if goal {
+				log.Printf("Study %s reached to the goal. It is completed", instance.Status.StudyID)
+				instance.Status.Condition = katibv1alpha1.ConditionCompleted
+				update = true
+				nextSuggestionSchedule = false
+			}
+			if err != nil {
+				log.Printf("Check Goal failed %v", err)
+			}
 		}
-		if err != nil {
-			log.Printf("Check Goal failed %v", err)
-		}
-	}
+	//}
 	if nextSuggestionSchedule {
 		if instance.Spec.RequestCount > 0 && instance.Status.SuggestionCount > instance.Spec.RequestCount {
 			log.Printf("Study %s reached the request count. It is completed", instance.Status.StudyID)
 			instance.Status.Condition = katibv1alpha1.ConditionCompleted
 			return true, nil
 		}
-		return r.getAndRunSuggestion(instance, c, ns)
+		if firstTime {
+			return r.getAndRunSuggestion(instance, c, ns)
+		}
+		return update, nil
 	} else {
 		return update, nil
 	}
