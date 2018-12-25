@@ -162,51 +162,59 @@ func (r *ReconcileStudyJobController) Reconcile(request reconcile.Request) (reco
 	}
 	mux.Lock()
 	defer mux.Unlock()
-	err := r.Get(context.TODO(), request.NamespacedName, instance)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			if _, ok := r.muxMap.Load(request.NamespacedName.String()); ok {
-				log.Printf("Study %s was deleted. Resouces will be released.", request.NamespacedName.String())
-				r.muxMap.Delete(request.NamespacedName.String())
-			}
-			// Object not found, return.  Created objects are automatically garbage collected.
-			// For additional cleanup logic use finalizers.
-			return reconcile.Result{}, nil
-		}
-		log.Printf("Fail to read Object %v", err)
-		// Error reading the object - requeue the request.
-		return reconcile.Result{}, err
-	}
 
-	var update bool = false
-	switch instance.Status.Condition {
-	case katibv1alpha1.ConditionCompleted,
-	     katibv1alpha1.ConditionFailed,
-	     katibv1alpha1.ConditionRunning:
-		update, err = r.checkStatus(instance, request.Namespace)
-	default:
+	var firstTime bool = true
+	for {
+		err := r.Get(context.TODO(), request.NamespacedName, instance)
+		if err != nil {
+			if errors.IsNotFound(err) {
+				if _, ok := r.muxMap.Load(request.NamespacedName.String()); ok {
+					log.Printf("Study %s was deleted. Resouces will be released.", request.NamespacedName.String())
+					r.muxMap.Delete(request.NamespacedName.String())
+				}
+				// Object not found, return.  Created objects are automatically garbage collected.
+				// For additional cleanup logic use finalizers.
+				return reconcile.Result{}, nil
+			}
+			log.Printf("Fail to read Object %v", err)
+			// Error reading the object - requeue the request.
+			return reconcile.Result{}, err
+		}
+
+		var update bool = false
+		switch instance.Status.Condition {
+		case katibv1alpha1.ConditionCompleted,
+		     katibv1alpha1.ConditionFailed,
+		     katibv1alpha1.ConditionRunning:
+			update, err = r.checkStatus(instance, request.Namespace, firstTime)
+		default:
+			now := metav1.Now()
+			instance.Status.StartTime = &now
+			err = initializeStudy(instance, request.Namespace)
+			if err != nil {
+				r.Update(context.TODO(), instance)
+				log.Printf("Fail to initialize %v", err)
+				return reconcile.Result{}, err
+			}
+			update = true
+		}
 		now := metav1.Now()
-		instance.Status.StartTime = &now
-		err = initializeStudy(instance, request.Namespace)
+		instance.Status.LastReconcileTime = &now
 		if err != nil {
 			r.Update(context.TODO(), instance)
-			log.Printf("Fail to initialize %v", err)
+			log.Printf("Fail to check status %v", err)
 			return reconcile.Result{}, err
 		}
-		update = true
-	}
-	now := metav1.Now()
-	instance.Status.LastReconcileTime = &now
-	if err != nil {
-		r.Update(context.TODO(), instance)
-		log.Printf("Fail to check status %v", err)
-		return reconcile.Result{}, err
-	}
-	if update {
-		err = r.Update(context.TODO(), instance)
-		if err != nil {
-			log.Printf("Fail to Update StudyJob %v : %v", instance.Status.StudyID, err)
-			return reconcile.Result{}, err
+		if update {
+			err = r.Update(context.TODO(), instance)
+			if err != nil {
+				log.Printf("Fail to Update StudyJob %v : %v", instance.Status.StudyID, err)
+				firstTime = false
+			} else {
+				break
+			}
+		} else {
+			break
 		}
 	}
 	return reconcile.Result{}, nil
@@ -445,7 +453,7 @@ func(r *ReconcileStudyJobController) getJobWorkerStatus(w *katibv1alpha1.WorkerC
 	}
 }
 
-func (r *ReconcileStudyJobController) checkStatus(instance *katibv1alpha1.StudyJob, ns string) (bool, error) {
+func (r *ReconcileStudyJobController) checkStatus(instance *katibv1alpha1.StudyJob, ns string, firstTime bool) (bool, error) {
 	nextSuggestionSchedule := true
 	var cwids []string
 	var update bool = false
@@ -470,8 +478,10 @@ func (r *ReconcileStudyJobController) checkStatus(instance *katibv1alpha1.StudyJ
 				if w.ObjectiveValue == nil && w.Condition == katibv1alpha1.ConditionCompleted {
 					cwids = append(cwids, w.WorkerID)
 				}
-				if err := r.deleteWorkerResources(instance, ns, &w); err != nil {
-					return false, err
+				if firstTime {
+					if err := r.deleteWorkerResources(instance, ns, &w); err != nil {
+						return false, err
+					}
 				}
 				continue
 			}
@@ -502,7 +512,9 @@ func (r *ReconcileStudyJobController) checkStatus(instance *katibv1alpha1.StudyJ
 			instance.Status.CompletionTime = &now
 			return true, nil
 		}
-		return r.getAndRunSuggestion(instance, c, ns)
+		if firstTime {
+			return r.getAndRunSuggestion(instance, c, ns)
+		}
 	} else {
 		return update, nil
 	}
