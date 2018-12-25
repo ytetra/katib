@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log"
 	"text/template"
+	"path/filepath"
 
 	katibapi "github.com/kubeflow/katib/pkg/api"
 	katibv1alpha1 "github.com/kubeflow/katib/pkg/api/operators/apis/studyjob/v1alpha1"
@@ -85,7 +86,7 @@ func getWorkerManifest(c katibapi.ManagerClient, studyID string, trial *katibapi
 			if err != nil {
 				return "", nil, err
 			}
-			if wt, ok := wtl[workerSpec.GoTemplate.TemplatePath]; !ok {
+			if wt, ok := wtl[filepath.Base(workerSpec.GoTemplate.TemplatePath)]; !ok {
 				return "", nil, fmt.Errorf("No tamplate name %s", workerSpec.GoTemplate.TemplatePath)
 			} else {
 				wtp, err = template.New("Worker").Parse(wt)
