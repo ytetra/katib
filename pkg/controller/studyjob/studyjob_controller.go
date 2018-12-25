@@ -421,84 +421,82 @@ func (r *ReconcileStudyJobController) checkStatus(instance *katibv1alpha1.StudyJ
 	}
 	defer conn.Close()
 	c := katibapi.NewManagerClient(conn)
-	//if firstTime {
-		for i, t := range instance.Status.Trials {
-			for j, w := range t.WorkerList {
-				if firstTime {
-					if w.Condition == katibv1alpha1.ConditionCompleted || w.Condition == katibv1alpha1.ConditionFailed {
-						if w.ObjectiveValue == nil && w.Condition == katibv1alpha1.ConditionCompleted {
-							cwids = append(cwids, w.WorkerID)
-						}
-						switch w.Kind {
-						case DefaultJobWorker:
-							if err := r.deleteWorkerResources(instance, &batchv1.Job{}, ns, w.WorkerID); err != nil {
-								return false, err
-							}
-						case TFJobWorker:
-							if err := r.deleteWorkerResources(instance, &tfjobv1beta1.TFJob{}, ns, w.WorkerID); err != nil {
-								return false, err
-							}
-						}
-						continue
+	for i, t := range instance.Status.Trials {
+		for j, w := range t.WorkerList {
+			if firstTime {
+				if w.Condition == katibv1alpha1.ConditionCompleted || w.Condition == katibv1alpha1.ConditionFailed {
+					if w.ObjectiveValue == nil && w.Condition == katibv1alpha1.ConditionCompleted {
+						cwids = append(cwids, w.WorkerID)
 					}
+					switch w.Kind {
+					case DefaultJobWorker:
+						if err := r.deleteWorkerResources(instance, &batchv1.Job{}, ns, w.WorkerID); err != nil {
+							return false, err
+						}
+					case TFJobWorker:
+						if err := r.deleteWorkerResources(instance, &tfjobv1beta1.TFJob{}, ns, w.WorkerID); err != nil {
+							return false, err
+						}
+					}
+					continue
 				}
-				nextSuggestionSchedule = false
-				switch w.Kind {
-				case DefaultJobWorker:
-					job := &batchv1.Job{}
-					nname := types.NamespacedName{Namespace: ns, Name: w.WorkerID}
-					joberr := r.Client.Get(context.TODO(), nname, job)
-					if joberr != nil {
-						continue
-					}
-					var state katibapi.State = katibapi.State_RUNNING
-					if job.Status.Active == 0 && job.Status.Succeeded > 0 {
+			}
+			nextSuggestionSchedule = false
+			switch w.Kind {
+			case DefaultJobWorker:
+				job := &batchv1.Job{}
+				nname := types.NamespacedName{Namespace: ns, Name: w.WorkerID}
+				joberr := r.Client.Get(context.TODO(), nname, job)
+				if joberr != nil {
+					continue
+				}
+				var state katibapi.State = katibapi.State_RUNNING
+				if job.Status.Active == 0 && job.Status.Succeeded > 0 {
+					state = katibapi.State_COMPLETED
+				} else if job.Status.Failed > 0 {
+					state = katibapi.State_ERROR
+				}
+				js := WorkerStatus{
+					CompletionTime: job.Status.CompletionTime,
+					WorkerState: state,
+				}
+				update, err = r.updateWorker(c, instance, js, ns, cwids[0:], i, j)
+			case TFJobWorker:
+				tfjob := &tfjobv1beta1.TFJob{}
+				nname := types.NamespacedName{Namespace: ns, Name: w.WorkerID}
+				tfjoberr := r.Client.Get(context.TODO(), nname, tfjob)
+				if tfjoberr != nil {
+					continue
+				}
+				var state katibapi.State = katibapi.State_RUNNING
+				if len(tfjob.Status.Conditions) > 0 {
+					lc := tfjob.Status.Conditions[len(tfjob.Status.Conditions) - 1]
+					if lc.Type == commonv1beta1.JobSucceeded {
 						state = katibapi.State_COMPLETED
-					} else if job.Status.Failed > 0 {
+					}	else if lc.Type == commonv1beta1.JobFailed {
 						state = katibapi.State_ERROR
 					}
-					js := WorkerStatus{
-						CompletionTime: job.Status.CompletionTime,
-						WorkerState: state,
-					}
-					update, err = r.updateWorker(c, instance, js, ns, cwids[0:], i, j)
-				case TFJobWorker:
-					tfjob := &tfjobv1beta1.TFJob{}
-					nname := types.NamespacedName{Namespace: ns, Name: w.WorkerID}
-					tfjoberr := r.Client.Get(context.TODO(), nname, tfjob)
-					if tfjoberr != nil {
-						continue
-					}
-					var state katibapi.State = katibapi.State_RUNNING
-					if len(tfjob.Status.Conditions) > 0 {
-						lc := tfjob.Status.Conditions[len(tfjob.Status.Conditions) - 1]
-						if lc.Type == commonv1beta1.JobSucceeded {
-							state = katibapi.State_COMPLETED
-						}	else if lc.Type == commonv1beta1.JobFailed {
-							state = katibapi.State_ERROR
-						}
-					}
-					js := WorkerStatus{
-						CompletionTime: tfjob.Status.CompletionTime,
-						WorkerState: state,
-					}
-					update, err = r.updateWorker(c, instance, js, ns, cwids[0:], i, j)
 				}
+				js := WorkerStatus{
+					CompletionTime: tfjob.Status.CompletionTime,
+					WorkerState: state,
+				}
+				update, err = r.updateWorker(c, instance, js, ns, cwids[0:], i, j)
 			}
 		}
-		if len(cwids) > 0 {
-			goal, err := r.checkGoal(instance, c, cwids)
-			if goal {
-				log.Printf("Study %s reached to the goal. It is completed", instance.Status.StudyID)
-				instance.Status.Condition = katibv1alpha1.ConditionCompleted
-				update = true
-				nextSuggestionSchedule = false
-			}
-			if err != nil {
-				log.Printf("Check Goal failed %v", err)
-			}
+	}
+	if len(cwids) > 0 {
+		goal, err := r.checkGoal(instance, c, cwids)
+		if goal {
+			log.Printf("Study %s reached to the goal. It is completed", instance.Status.StudyID)
+			instance.Status.Condition = katibv1alpha1.ConditionCompleted
+			update = true
+			nextSuggestionSchedule = false
 		}
-	//}
+		if err != nil {
+			log.Printf("Check Goal failed %v", err)
+		}
+	}
 	if nextSuggestionSchedule {
 		if instance.Spec.RequestCount > 0 && instance.Status.SuggestionCount > instance.Spec.RequestCount {
 			log.Printf("Study %s reached the request count. It is completed", instance.Status.StudyID)
